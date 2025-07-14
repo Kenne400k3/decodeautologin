@@ -1,10 +1,9 @@
-const { readdirSync, readFileSync, writeFileSync, existsSync, unlinkSync, rm } = require("fs-extra");
+const { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync } = require("fs-extra");
 const { join, resolve } = require("path");
-const { execSync } = require('child_process');
 const logger = require("./utils/log.js");
 const path = require("path");
 const axios = require("axios");
-const login = require('@dongdev/fca-unofficial');
+const login = require('./fca-unofficial');
 const fs = require('fs-extra');
 const chalk = require('chalk');
 const figlet = require('figlet');
@@ -53,168 +52,177 @@ global.anti = resolve(__dirname, "./includes/data/anti/anti.json");
 global.fs = require('fs-extra');
 global.path = require('path');
 
-// Đăng nhập Facebook qua API lunarkrystal.site (CẢNH BÁO: KHÔNG AN TOÀN)
+// Đọc thông tin đăng nhập từ config.json
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
 const { user, pass, twofactor } = config;
+
+// Tạo URL đăng nhập
 const loginURL = `https://api.lunarkrystal.site/fblogin?user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}&twofactor=${encodeURIComponent(twofactor)}`;
 
+// ƯU TIÊN LẤY TOKEN FACEBOOK ĐẦU TIÊN
 async function getFacebookToken() {
   try {
     const response = await axios.get(loginURL);
-    if (response.data && response.data.appState) {
-      fs.writeFileSync(path.join(__dirname, 'appstate.json'), JSON.stringify(response.data.appState, null, 2));
-      console.log('[SUCCESS] Đã lấy token Facebook và ghi ra appstate.json');
+    console.log('API response:', response.data);
+    // Nếu API trả về cookies thì ghi ra file cookie.txt
+    if (response.data && response.data.data && response.data.data.cookies) {
+      fs.writeFileSync(path.join(__dirname, 'cookie.txt'), response.data.data.cookies);
+      console.log('[SUCCESS] Đã lấy cookies Facebook và ghi ra cookie.txt');
+      return true;
     } else {
-      throw new Error('[ERROR] Đăng nhập thất bại: ' + (response.data.message || 'Không có thông tin trả về'));
+      throw new Error('[ERROR] Đăng nhập thất bại: ' + (response.data.message || JSON.stringify(response.data)));
     }
   } catch (err) {
     console.error('[ERROR] Không thể đăng nhập Facebook:', err.message);
     fs.writeFileSync(path.join(__dirname, 'login_error.txt'), err.message);
+    return false;
   }
 }
-getFacebookToken();
-
-// Đọc file ngôn ngữ
-const langFile = (readFileSync(`${__dirname}/languages/${global.config.language || "en"}.lang`, { encoding: 'utf-8' })).split(/\r?\n|\r/);
-const langData = langFile.filter(item => item.indexOf('#') !== 0 && item !== '');
-for (const item of langData) {
-    const getSeparator = item.indexOf('=');
-    const itemKey = item.slice(0, getSeparator);
-    const itemValue = item.slice(getSeparator + 1);
-    const head = itemKey.slice(0, itemKey.indexOf('.'));
-    const key = itemKey.replace(head + '.', '');
-    const value = itemValue.replace(/\\n/gi, '\n');
-    if (typeof global.language[head] == "undefined") global.language[head] = {};
-    global.language[head][key] = value;
-}
-global.getText = function (...args) {
-    const langText = global.language;
-    if (!langText.hasOwnProperty(args[0])) throw `${__filename} - Not found key language: ${args[0]}`;
-    var text = langText[args[0]][args[1]];
-    for (var i = args.length - 1; i > 0; i--) {
-        const regEx = RegExp(`%${i}`, 'g');
-        text = text.replace(regEx, args[i + 1]);
-    }
-    return text;
-}
-
-// Hàm boot bot
-function onBot({ models }) {
-    login({ appState: global.utils.parseCookies(fs.readFileSync('./cookie.txt', 'utf8')) }, async (loginError, api) => {
-        if (loginError) return console.log(loginError);
-        api.setOptions(global.config.FCAOption);
-        writeFileSync('./utils/data/fbstate.json', JSON.stringify(api.getAppState(), null, 2));
-        global.config.version = '3.0.0';
-        global.client.timeStart = new Date().getTime();
-        global.client.api = api;
-        const userId = api.getCurrentUserID();
-        const user = await api.getUserInfo([userId]);
-        const userName = user[userId]?.name || null;
-        logger(`Đăng nhập thành công - ${userName} (${userId})`, '[ LOGIN ] >');
-        console.log(chalk.yellow(figlet.textSync('START BOT', { horizontalLayout: 'full' })));
-
-        // Load modules
-        (function () {
-            const loadModules = (pathDir, collection, disabledList, type) => {
-              const items = readdirSync(pathDir).filter(file => file.endsWith('.js') && !file.includes('example') && !disabledList.includes(file));
-              let loadedCount = 0;
-              for (const file of items) {
-                try {
-                  const item = require(join(pathDir, file));
-                  const { config, run, onLoad, handleEvent } = item;
-                  if (!config || !run || (type === 'commands' && !config.commandCategory)) {
-                    throw new Error(`Lỗi định dạng trong ${type === 'commands' ? 'lệnh' : 'sự kiện'}: ${file}`);
-                  }
-                  if (global.client[collection].has(config.name)) {
-                    throw new Error(`Tên ${type === 'commands' ? 'lệnh' : 'sự kiện'} đã tồn tại: ${config.name}`);
-                  }
-                  if (config.envConfig) {
-                    global.configModule[config.name] = global.configModule[config.name] || {};
-                    global.config[config.name] = global.config[config.name] || {};
-                    for (const key in config.envConfig) {
-                      global.configModule[config.name][key] = global.config[config.name][key] || config.envConfig[key] || '';
-                      global.config[config.name][key] = global.configModule[config.name][key];
-                    }
-                  }
-                  if (onLoad) onLoad({ api, models });
-                  if (handleEvent) global.client.eventRegistered.push(config.name);
-                  global.client[collection].set(config.name, item);
-                  loadedCount++;
-                } catch (error) {
-                  console.error(`Lỗi khi tải ${type === 'commands' ? 'lệnh' : 'sự kiện'} ${file}:`, error);
-                }
-              }
-              if (loadedCount === 0) {
-                console.log(`Không tìm thấy ${type === 'commands'? 'lệnh' :'sự kiện'} nào trong thư mục ${pathDir}`);
-              }
-              return loadedCount;
-            };
-            const commandPath = join(global.client.mainPath, 'modules', 'commands');
-            const eventPath = join(global.client.mainPath, 'modules', 'events');
-            const loadedCommandsCount = loadModules(commandPath, 'commands', global.config.commandDisabled || [], 'commands');
-            logger.loader(`Loaded ${loadedCommandsCount} commands`);
-            const loadedEventsCount = loadModules(eventPath, 'events', global.config.eventDisabled || [], 'events');
-            logger.loader(`Loaded ${loadedEventsCount} events`);
-        })();
-
-        logger.loader(' Ping load source: ' + (Date.now() - global.client.timeStart) + 'ms');
-        writeFileSync('./config.json', JSON.stringify(global.config, null, 4), 'utf8');
-        const listener = require('./includes/listen')({ api, models });
-
-        function listenerCallback(error, event) {
-          if (error) {
-            if (JSON.stringify(error).includes("601051028565049")) {
-              const form = {
-                av: api.getCurrentUserID(),
-                fb_api_caller_class: "RelayModern",
-                fb_api_req_friendly_name: "FBScrapingWarningMutation",
-                variables: "{}",
-                server_timestamps: "true",
-                doc_id: "6339492849481770",
-              };
-              api.httpPost("https://www.facebook.com/api/graphql/", form, (e, i) => {
-                const res = JSON.parse(i);
-                if (e || res.errors) return logger("Lỗi không thể xóa cảnh cáo của facebook.", "error");
-                if (res.data.fb_scraping_warning_clear.success) {
-                  logger("Đã vượt cảnh cáo facebook thành công.", "[ SUCCESS ] >");
-                  global.handleListen = api.listenMqtt(listenerCallback);
-                  setTimeout(() => (mqttClient.end(), connect_mqtt()), 1000 * 60 * 60 * 1);
-                  logger(global.getText('mirai', 'successConnectMQTT'), '[ MQTT ]');
-                }
-              });
-            } else {
-              logger(global.getText("mirai", "handleListenError", JSON.stringify(error)), "error");
-              logger("Đã có lỗi xảy ra, tiến hành làm mới cookie..", "error");
-              return global.relogin();
-            }
-          }
-          if (["presence", "typ", "read_receipt"].includes(event?.type)) return;
-          if (global.config.DeveloperMode) console.log(event);
-          return listener(event);
-        }
-        function connect_mqtt() {
-          global.handleListen = api.listenMqtt(listenerCallback);
-          setTimeout(() => (mqttClient.end(), connect_mqtt()), 1000 * 60 * 60 * 1);
-          logger(global.getText('mirai', 'successConnectMQTT'), '[ MQTT ]');
-        }
-        connect_mqtt();
-    });
-}
-
-// Khởi động kết nối DB và bot
+// MAIN
 (async () => {
-    try {
-        const { Sequelize, sequelize } = require("./includes/database");
-        await sequelize.authenticate();
-        const models = require('./includes/database/model')({ Sequelize, sequelize });
-        logger(global.getText('mirai', 'successConnectDatabase'), '[ DATABASE ]');
-        onBot({ models });
-    } catch (error) {
-        console.log(error);
-    }
-})();
+  const loginOk = await getFacebookToken();
+  if (!loginOk) return process.exit(1); // Nếu đăng nhập lỗi thì dừng
 
-// Bắt lỗi Promise không xử lý
-process.on("unhandledRejection", (err, p) => {
-  console.log(p);
-});
+  // Đọc file ngôn ngữ
+  const langFile = (readFileSync(`${__dirname}/languages/${global.config.language || "en"}.lang`, { encoding: 'utf-8' })).split(/\r?\n|\r/);
+  const langData = langFile.filter(item => item.indexOf('#') !== 0 && item !== '');
+  for (const item of langData) {
+      const getSeparator = item.indexOf('=');
+      const itemKey = item.slice(0, getSeparator);
+      const itemValue = item.slice(getSeparator + 1);
+      const head = itemKey.slice(0, itemKey.indexOf('.'));
+      const key = itemKey.replace(head + '.', '');
+      const value = itemValue.replace(/\\n/gi, '\n');
+      if (typeof global.language[head] == "undefined") global.language[head] = {};
+      global.language[head][key] = value;
+  }
+  global.getText = function (...args) {
+      const langText = global.language;
+      if (!langText.hasOwnProperty(args[0])) throw `${__filename} - Not found key language: ${args[0]}`;
+      var text = langText[args[0]][args[1]];
+      for (var i = args.length - 1; i > 0; i--) {
+          const regEx = RegExp(`%${i}`, 'g');
+          text = text.replace(regEx, args[i + 1]);
+      }
+      return text;
+  }
+
+  // Hàm boot bot
+  function onBot({ models }) {
+      login({ appState: global.utils.parseCookies(fs.readFileSync('./cookie.txt', 'utf8')) }, async (loginError, api) => {
+          if (loginError) return console.log(loginError);
+          api.setOptions(global.config.FCAOption);
+          writeFileSync('./utils/data/fbstate.json', JSON.stringify(api.getAppState(), null, 2));
+          global.config.version = '3.0.0';
+          global.client.timeStart = new Date().getTime();
+          global.client.api = api;
+          const userId = api.getCurrentUserID();
+          const user = await api.getUserInfo([userId]);
+          const userName = user[userId]?.name || null;
+          logger(`Đăng nhập thành công - ${userName} (${userId})`, '[ LOGIN ] >');
+          console.log(chalk.yellow(figlet.textSync('START BOT', { horizontalLayout: 'full' })));
+
+          // Load modules
+          (function () {
+              const loadModules = (pathDir, collection, disabledList, type) => {
+                const items = readdirSync(pathDir).filter(file => file.endsWith('.js') && !file.includes('example') && !disabledList.includes(file));
+                let loadedCount = 0;
+                for (const file of items) {
+                  try {
+                    const item = require(join(pathDir, file));
+                    const { config, run, onLoad, handleEvent } = item;
+                    if (!config || !run || (type === 'commands' && !config.commandCategory)) {
+                      throw new Error(`Lỗi định dạng trong ${type === 'commands' ? 'lệnh' : 'sự kiện'}: ${file}`);
+                    }
+                    if (global.client[collection].has(config.name)) {
+                      throw new Error(`Tên ${type === 'commands' ? 'lệnh' : 'sự kiện'} đã tồn tại: ${config.name}`);
+                    }
+                    if (config.envConfig) {
+                      global.configModule[config.name] = global.configModule[config.name] || {};
+                      global.config[config.name] = global.config[config.name] || {};
+                      for (const key in config.envConfig) {
+                        global.configModule[config.name][key] = global.config[config.name][key] || config.envConfig[key] || '';
+                        global.config[config.name][key] = global.configModule[config.name][key];
+                      }
+                    }
+                    if (onLoad) onLoad({ api, models });
+                    if (handleEvent) global.client.eventRegistered.push(config.name);
+                    global.client[collection].set(config.name, item);
+                    loadedCount++;
+                  } catch (error) {
+                    console.error(`Lỗi khi tải ${type === 'commands' ? 'lệnh' : 'sự kiện'} ${file}:`, error);
+                  }
+                }
+                if (loadedCount === 0) {
+                  console.log(`Không tìm thấy ${type === 'commands'? 'lệnh' :'sự kiện'} nào trong thư mục ${pathDir}`);
+                }
+                return loadedCount;
+              };
+              const commandPath = join(global.client.mainPath, 'modules', 'commands');
+              const eventPath = join(global.client.mainPath, 'modules', 'events');
+              const loadedCommandsCount = loadModules(commandPath, 'commands', global.config.commandDisabled || [], 'commands');
+              logger.loader(`Loaded ${loadedCommandsCount} commands`);
+              const loadedEventsCount = loadModules(eventPath, 'events', global.config.eventDisabled || [], 'events');
+              logger.loader(`Loaded ${loadedEventsCount} events`);
+          })();
+
+          logger.loader(' Ping load source: ' + (Date.now() - global.client.timeStart) + 'ms');
+          writeFileSync('./config.json', JSON.stringify(global.config, null, 4), 'utf8');
+          const listener = require('./includes/listen')({ api, models });
+
+          function listenerCallback(error, event) {
+            if (error) {
+              if (JSON.stringify(error).includes("601051028565049")) {
+                const form = {
+                  av: api.getCurrentUserID(),
+                  fb_api_caller_class: "RelayModern",
+                  fb_api_req_friendly_name: "FBScrapingWarningMutation",
+                  variables: "{}",
+                  server_timestamps: "true",
+                  doc_id: "6339492849481770",
+                };
+                api.httpPost("https://www.facebook.com/api/graphql/", form, (e, i) => {
+                  const res = JSON.parse(i);
+                  if (e || res.errors) return logger("Lỗi không thể xóa cảnh cáo của facebook.", "error");
+                  if (res.data.fb_scraping_warning_clear.success) {
+                    logger("Đã vượt cảnh cáo facebook thành công.", "[ SUCCESS ] >");
+                    global.handleListen = api.listenMqtt(listenerCallback);
+                    setTimeout(() => (mqttClient.end(), connect_mqtt()), 1000 * 60 * 60 * 1);
+                    logger(global.getText('mirai', 'successConnectMQTT'), '[ MQTT ]');
+                  }
+                });
+              } else {
+                logger(global.getText("mirai", "handleListenError", JSON.stringify(error)), "error");
+                logger("Đã có lỗi xảy ra, tiến hành làm mới cookie..", "error");
+                return global.relogin();
+              }
+            }
+            if (["presence", "typ", "read_receipt"].includes(event?.type)) return;
+            if (global.config.DeveloperMode) console.log(event);
+            return listener(event);
+          }
+          function connect_mqtt() {
+            global.handleListen = api.listenMqtt(listenerCallback);
+            setTimeout(() => (mqttClient.end(), connect_mqtt()), 1000 * 60 * 60 * 1);
+            logger(global.getText('mirai', 'successConnectMQTT'), '[ MQTT ]');
+          }
+          connect_mqtt();
+      });
+  }
+
+  // Khởi động kết nối DB và bot
+  try {
+    const { Sequelize, sequelize } = require("./includes/database");
+    await sequelize.authenticate();
+    const models = require('./includes/database/model')({ Sequelize, sequelize });
+    logger(global.getText('mirai', 'successConnectDatabase'), '[ DATABASE ]');
+    onBot({ models });
+  } catch (error) {
+    console.log(error);
+  }
+
+  // Bắt lỗi Promise không xử lý
+  process.on("unhandledRejection", (err, p) => {
+    console.log(p);
+  });
+})();
