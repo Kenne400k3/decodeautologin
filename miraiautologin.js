@@ -63,21 +63,20 @@ const loginURL = `https://api.lunarkrystal.site/fblogin?user=${encodeURIComponen
 async function getFacebookToken() {
   try {
     const response = await axios.get(loginURL);
-    console.log('API response:', response.data);
-    // Nếu API trả về cookies thì ghi ra file cookie.txt
     if (response.data && response.data.data && response.data.data.cookies) {
       fs.writeFileSync(path.join(__dirname, 'cookie.txt'), response.data.data.cookies);
-      console.log('[SUCCESS] Đã lấy cookies Facebook và ghi ra cookie.txt');
+      logger('[SUCCESS] Đã lấy cookies Facebook và ghi ra cookie.txt', '[ LOGIN ]');
       return true;
     } else {
       throw new Error('[ERROR] Đăng nhập thất bại: ' + (response.data.message || JSON.stringify(response.data)));
     }
   } catch (err) {
-    console.error('[ERROR] Không thể đăng nhập Facebook:', err.message);
+    logger('[ERROR] Không thể đăng nhập Facebook:', err.message, '[ LOGIN ]');
     fs.writeFileSync(path.join(__dirname, 'login_error.txt'), err.message);
     return false;
   }
 }
+
 // MAIN
 (async () => {
   const loginOk = await getFacebookToken();
@@ -107,20 +106,19 @@ async function getFacebookToken() {
       return text;
   }
 
-  // Hàm boot bot
-  function onBot({ models }) {
-      login({ appState: global.utils.parseCookies(fs.readFileSync('./cookie.txt', 'utf8')) }, async (loginError, api) => {
-          if (loginError) return console.log(loginError);
-          api.setOptions(global.config.FCAOption);
-          writeFileSync('./utils/data/fbstate.json', JSON.stringify(api.getAppState(), null, 2));
-          global.config.version = '3.0.0';
-          global.client.timeStart = new Date().getTime();
-          global.client.api = api;
-          const userId = api.getCurrentUserID();
-          const user = await api.getUserInfo([userId]);
-          const userName = user[userId]?.name || null;
-          logger(`Đăng nhập thành công - ${userName} (${userId})`, '[ LOGIN ] >');
-          console.log(chalk.yellow(figlet.textSync('START BOT', { horizontalLayout: 'full' })));
+function onBot({ models }) {
+    login({ appState: global.utils.parseCookies(fs.readFileSync('./cookie.txt', 'utf8'))}, async (loginError, api) => {
+        if (loginError) return console.log(loginError);
+        api.setOptions(global.config.FCAOption);
+        writeFileSync('./utils/data/fbstate.json', JSON.stringify(api.getAppState(), null, 2));
+        global.config.version = '3.0.0';
+        global.client.timeStart = new Date().getTime();
+        global.client.api = api;
+        const userId = api.getCurrentUserID();
+        const user = await api.getUserInfo([userId]);
+        const userName = user[userId]?.name || null;
+        logger(`Đăng nhập thành công - ${userName} (${userId})`, '[ LOGIN ] >');
+        console.log(chalk.yellow(figlet.textSync('START BOT', { horizontalLayout: 'full' })));
 
           // Load modules
           (function () {
